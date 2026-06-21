@@ -3,5 +3,5 @@
 
 /// Namespace for the EdgeEngine native inference runtime.
 public enum EdgeEngine {
-    public static let version = "1.0.0-rc138"
+    public static let version = "1.0.0-rc140"
 }
