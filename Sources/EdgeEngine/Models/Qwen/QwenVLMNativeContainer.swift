@@ -324,6 +324,7 @@ public final class QwenVLMNativeContainer {
         temperature: Float,
         topK: Int? = nil,
         topP: Float,
+        minP: Float = 0,
         seed: UInt64
     ) throws -> Int {
         guard let cmlxDecoderSession else {
@@ -333,8 +334,83 @@ public final class QwenVLMNativeContainer {
             temperature: temperature,
             topK: topK,
             topP: topP,
+            minP: minP,
             seed: seed
         )
+    }
+
+    /// Sampled-aware async prefill for the text path. Mirrors the LLM cmlx
+    /// lazy-decode sampled prefill so VLM text-only turns can use the fast
+    /// Metal decode path instead of falling back to the Swift greedy session.
+    public func prefillSampledCmlxTokensAsync(
+        tokenIDs: [Int],
+        temperature: Float,
+        topK: Int? = nil,
+        topP: Float,
+        minP: Float = 0,
+        seed: UInt64
+    ) throws {
+        guard let cmlxDecoderSession else {
+            throw QwenVLMNativeContainerError.decoderNotLoaded
+        }
+        try cmlxDecoderSession.prefillSampledAsync(
+            tokenIDs: tokenIDs,
+            temperature: temperature,
+            topK: topK,
+            topP: topP,
+            minP: minP,
+            seed: seed
+        )
+    }
+
+    public func setCmlxSamplingPenalties(
+        repetitionPenalty: Float,
+        repetitionContextTokenIds: [Int],
+        presencePenalty: Float,
+        presenceContextTokenIds: [Int],
+        frequencyPenalty: Float,
+        frequencyContextTokenIds: [Int]
+    ) throws {
+        guard let cmlxDecoderSession else {
+            throw QwenVLMNativeContainerError.decoderNotLoaded
+        }
+        try cmlxDecoderSession.setSamplingPenalties(
+            repetitionPenalty: repetitionPenalty,
+            repetitionContextTokenIds: repetitionContextTokenIds,
+            presencePenalty: presencePenalty,
+            presenceContextTokenIds: presenceContextTokenIds,
+            frequencyPenalty: frequencyPenalty,
+            frequencyContextTokenIds: frequencyContextTokenIds
+        )
+    }
+
+    public func clearCmlxRepetitionPenalty() throws {
+        guard let cmlxDecoderSession else {
+            throw QwenVLMNativeContainerError.decoderNotLoaded
+        }
+        try cmlxDecoderSession.clearRepetitionPenalty()
+    }
+
+    public func setCmlxEOSSamplingBias(
+        tokenIds: [Int],
+        suppress: Bool,
+        logitPenalty: Float
+    ) throws {
+        guard let cmlxDecoderSession else {
+            throw QwenVLMNativeContainerError.decoderNotLoaded
+        }
+        try cmlxDecoderSession.setEOSSamplingBias(
+            tokenIds: tokenIds,
+            suppress: suppress,
+            logitPenalty: logitPenalty
+        )
+    }
+
+    public func clearCmlxEOSSamplingBias() throws {
+        guard let cmlxDecoderSession else {
+            throw QwenVLMNativeContainerError.decoderNotLoaded
+        }
+        try cmlxDecoderSession.clearEOSSamplingBias()
     }
 
     public func makeDecoderCaches(
