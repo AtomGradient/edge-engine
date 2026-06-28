@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <ctime>
 #include <exception>
 #include <iomanip>
 #include <limits>
@@ -82,6 +83,102 @@ size_t array_element_count(const mlx::core::Shape& shape) {
   return count;
 }
 
+size_t qwen35_array_map_bytes(
+    const std::unordered_map<int, mlx::core::array>& values) {
+  size_t bytes = 0;
+  for (const auto& entry : values) {
+    bytes += entry.second.nbytes();
+  }
+  return bytes;
+}
+
+size_t qwen35_quantized_map_bytes(
+    const std::unordered_map<int, EdgeCmlxQuantizedArray>& values) {
+  size_t bytes = 0;
+  for (const auto& entry : values) {
+    bytes += entry.second.packed.nbytes();
+    bytes += entry.second.scales.nbytes();
+    bytes += entry.second.biases.nbytes();
+  }
+  return bytes;
+}
+
+int qwen35_max_int_map_value(const std::unordered_map<int, int>& values) {
+  int max_value = 0;
+  for (const auto& entry : values) {
+    max_value = std::max(max_value, entry.second);
+  }
+  return max_value;
+}
+
+bool qwen35_session_has_decoder_weights(
+    const EdgeCmlxQwen35Session& session) {
+  return !session.float_tensors.empty() ||
+      !session.quantized_tensors.empty() ||
+      !session.gdn_neg_exp_a_log_tensors.empty();
+}
+
+std::string qwen35_session_memory_summary(
+    const EdgeCmlxQwen35Session& session) {
+  const size_t weights_float_bytes =
+      qwen35_array_map_bytes(session.float_tensors);
+  const size_t weights_quantized_bytes =
+      qwen35_quantized_map_bytes(session.quantized_tensors);
+  const size_t weights_gdn_static_bytes =
+      qwen35_array_map_bytes(session.gdn_neg_exp_a_log_tensors);
+  const size_t state_attention_dense_bytes =
+      qwen35_array_map_bytes(session.attention_key_states) +
+      qwen35_array_map_bytes(session.attention_value_states);
+  const size_t state_attention_quantized_bytes =
+      qwen35_quantized_map_bytes(session.attention_quantized_key_states) +
+      qwen35_quantized_map_bytes(session.attention_quantized_value_states);
+  const size_t state_gdn_bytes =
+      qwen35_array_map_bytes(session.gdn_conv_states) +
+      qwen35_array_map_bytes(session.gdn_recurrent_states);
+  const size_t state_score_bytes =
+      qwen35_array_map_bytes(session.attention_score_states);
+  const size_t pending_token_bytes = session.pending_token.has_value()
+      ? session.pending_token->nbytes()
+      : 0;
+
+  std::ostringstream summary;
+  summary << "weightsFloatBytes=" << weights_float_bytes
+          << " weightsQuantizedBytes=" << weights_quantized_bytes
+          << " weightsGdnStaticBytes=" << weights_gdn_static_bytes
+          << " weightsPresent="
+          << (qwen35_session_has_decoder_weights(session) ? 1 : 0)
+          << " stateAttentionDenseBytes=" << state_attention_dense_bytes
+          << " stateAttentionQuantizedBytes=" << state_attention_quantized_bytes
+          << " stateGdnBytes=" << state_gdn_bytes
+          << " stateScoreBytes=" << state_score_bytes
+          << " pendingTokenBytes=" << pending_token_bytes
+          << " floatTensorCount=" << session.float_tensors.size()
+          << " quantizedTensorCount=" << session.quantized_tensors.size()
+          << " gdnStaticTensorCount=" << session.gdn_neg_exp_a_log_tensors.size()
+          << " attentionDenseStateCount="
+          << (session.attention_key_states.size() +
+              session.attention_value_states.size())
+          << " attentionQuantizedStateCount="
+          << (session.attention_quantized_key_states.size() +
+              session.attention_quantized_value_states.size())
+          << " gdnStateCount="
+          << (session.gdn_conv_states.size() +
+              session.gdn_recurrent_states.size())
+          << " scoreStateCount=" << session.attention_score_states.size()
+          << " activeLengths="
+          << qwen35_max_int_map_value(session.attention_active_lengths)
+          << " dsrTokens="
+          << qwen35_max_int_map_value(
+                 session.attention_dsr_tokens_since_eviction)
+          << " decoded=" << session.decoded_token_count
+          << " basePosition=" << session.attention_cache_base_position
+          << " baseIndex=" << session.attention_cache_base_index
+          << " pendingToken=" << (session.pending_token.has_value() ? 1 : 0)
+          << " activeMB=" << (mlx::core::get_active_memory() / 1048576)
+          << " cacheMB=" << (mlx::core::get_cache_memory() / 1048576);
+  return summary.str();
+}
+
 void validate_array_element_count(
     const mlx::core::array& value,
     size_t expected_count,
@@ -102,7 +199,65 @@ const char* dtype_label(mlx::core::Dtype dtype) {
   if (dtype == mlx::core::float32) {
     return "f32";
   }
+  if (dtype == mlx::core::bfloat16) {
+    return "bf16";
+  }
   return "other";
+}
+
+static bool qwen35_vlm_load_debug_enabled() {
+  const char* value = std::getenv("EDGE_CMLX_VLM_LOAD_DEBUG");
+  return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+static void qwen35_vlm_load_debug(const std::string& message) {
+  if (!qwen35_vlm_load_debug_enabled()) {
+    return;
+  }
+  std::fprintf(stderr, "[CmlxVLM] %s\n", message.c_str());
+  std::fflush(stderr);
+}
+
+static std::string qwen35_vlm_diagnostic_timestamp() {
+  const auto now = std::chrono::system_clock::now();
+  const auto seconds = std::chrono::system_clock::to_time_t(now);
+  const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(
+      now.time_since_epoch()) % 1000;
+  std::tm time_info{};
+  gmtime_r(&seconds, &time_info);
+  char second_buffer[32];
+  std::strftime(
+      second_buffer, sizeof(second_buffer), "%Y-%m-%dT%H:%M:%S", &time_info);
+  char timestamp[48];
+  std::snprintf(
+      timestamp,
+      sizeof(timestamp),
+      "%s.%03lldZ",
+      second_buffer,
+      static_cast<long long>(millis.count()));
+  return timestamp;
+}
+
+void qwen35_vlm_diagnostic_marker(const std::string& message) {
+  qwen35_vlm_load_debug(message);
+  if (!qwen35_vlm_load_debug_enabled()) {
+    return;
+  }
+  const char* path = std::getenv("EDGE_CMLX_VLM_DIAGNOSTIC_FILE");
+  if (path == nullptr || path[0] == '\0') {
+    return;
+  }
+  FILE* file = std::fopen(path, "a");
+  if (file == nullptr) {
+    return;
+  }
+  const auto timestamp = qwen35_vlm_diagnostic_timestamp();
+  std::fprintf(
+      file,
+      "[%s] edgekit_vlm_cmlx_cpp_%s\n",
+      timestamp.c_str(),
+      message.c_str());
+  std::fclose(file);
 }
 
 mlx::core::Strides row_contiguous_strides(const mlx::core::Shape& shape) {
@@ -1623,6 +1778,11 @@ void register_loaded_vision_float_tensor(
     const std::unordered_map<std::string, mlx::core::array>& tensors,
     const std::string& tensor_name) {
   const auto& source = checked_loaded_tensor(tensors, tensor_name);
+  qwen35_vlm_diagnostic_marker(
+      "register_vision_float_tensor eval_begin id=" +
+      std::to_string(tensor_id) +
+      " dtype=" + dtype_label(source.dtype()) +
+      " name=" + tensor_name);
   auto tensor = source.dtype() == mlx::core::float32
       ? source
       : mlx::core::astype(
@@ -1630,6 +1790,11 @@ void register_loaded_vision_float_tensor(
             mlx::core::float32,
             mlx::core::Device{mlx::core::Device::gpu});
   mlx::core::eval(tensor);
+  qwen35_vlm_diagnostic_marker(
+      "register_vision_float_tensor eval_done id=" +
+      std::to_string(tensor_id) +
+      " storedDtype=" + dtype_label(tensor.dtype()) +
+      " name=" + tensor_name);
   session.float_tensors.insert_or_assign(tensor_id, std::move(tensor));
 }
 
@@ -7077,6 +7242,37 @@ int edge_cmlx_qwen35_session_load_safetensors(
   }
 }
 
+int edge_cmlx_qwen35_session_has_decoder_weights(const void* session) {
+  edge_cmlx_error.clear();
+  try {
+    const auto* qwen_session = checked_qwen35_session(session);
+    return qwen35_session_has_decoder_weights(*qwen_session) ? 1 : 0;
+  } catch (const std::exception& error) {
+    return set_error(error.what());
+  } catch (...) {
+    return set_error(
+        "edge_cmlx_qwen35_session_has_decoder_weights failed with an unknown error");
+  }
+}
+
+int edge_cmlx_qwen35_session_unload_decoder_weights_preserving_state(
+    void* session) {
+  edge_cmlx_error.clear();
+  try {
+    auto* qwen_session = checked_qwen35_session(session);
+    qwen_session->float_tensors.clear();
+    qwen_session->quantized_tensors.clear();
+    qwen_session->gdn_neg_exp_a_log_tensors.clear();
+    mlx::core::clear_cache();
+    return 0;
+  } catch (const std::exception& error) {
+    return set_error(error.what());
+  } catch (...) {
+    return set_error(
+        "edge_cmlx_qwen35_session_unload_decoder_weights_preserving_state failed with an unknown error");
+  }
+}
+
 int edge_cmlx_qwen35_session_restore_neural_imprint_cache(
     void* session,
     const char* artifact_path,
@@ -9085,6 +9281,36 @@ int edge_cmlx_qwen35_session_copy_last_sample_diagnostics(
   } catch (...) {
     return set_error(
         "edge_cmlx_qwen35_session_copy_last_sample_diagnostics failed with an unknown error");
+  }
+}
+
+int edge_cmlx_qwen35_session_copy_memory_summary(
+    void* session,
+    char* output,
+    int output_capacity) {
+  edge_cmlx_error.clear();
+  if (output == nullptr) {
+    return set_error(
+        "edge_cmlx_qwen35_session_copy_memory_summary received a null output pointer");
+  }
+  if (output_capacity <= 0) {
+    return set_error(
+        "edge_cmlx_qwen35_session_copy_memory_summary received an invalid output capacity");
+  }
+  try {
+    const auto* qwen_session = checked_qwen35_session(session);
+    const std::string summary = qwen35_session_memory_summary(*qwen_session);
+    std::snprintf(
+        output,
+        static_cast<size_t>(output_capacity),
+        "%s",
+        summary.c_str());
+    return 0;
+  } catch (const std::exception& error) {
+    return set_error(error.what());
+  } catch (...) {
+    return set_error(
+        "edge_cmlx_qwen35_session_copy_memory_summary failed with an unknown error");
   }
 }
 

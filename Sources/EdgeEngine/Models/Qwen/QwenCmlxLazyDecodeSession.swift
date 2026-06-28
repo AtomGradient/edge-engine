@@ -210,6 +210,10 @@ public final class QwenCmlxLazyDecodeSession {
         session.decodedTokenCount
     }
 
+    public func hasDecoderWeights() throws -> Bool {
+        try session.hasDecoderWeights()
+    }
+
     public static func configureCommandBufferLimits(
         maxOps: Int,
         maxMB: Int
@@ -231,6 +235,32 @@ public final class QwenCmlxLazyDecodeSession {
     public func reset() throws {
         try session.resetDecodeCache()
         tokenPosition = 0
+    }
+
+    public func unloadDecoderWeightsPreservingState() throws {
+        try session.unloadDecoderWeightsPreservingState()
+    }
+
+    public func reloadDecoderWeights(bundleIndex: QwenModelBundleIndex) throws {
+        guard let quantization = bundleIndex.architecture.quantization else {
+            throw QwenCmlxLazyDecodeSessionError.missingQuantizationProfile
+        }
+        let shardURLs = Set(bundleIndex.weightMap.values)
+            .sorted()
+            .map { bundleIndex.rootURL.appendingPathComponent($0) }
+        try session.loadSafetensors(
+            shardURLs: shardURLs,
+            modelPrefix: bundleIndex.modelPrefix,
+            groupSize: quantization.groupSize,
+            bits: quantization.bits
+        )
+    }
+
+    public func reloadDecoderWeights(
+        model: QwenHybridModelReference,
+        executor: MetalKernelExecutor? = nil
+    ) throws {
+        try Self.register(model: model, into: session, executor: executor)
     }
 
     public func restoreNeuralImprintCache(
@@ -445,6 +475,10 @@ public final class QwenCmlxLazyDecodeSession {
 
     public func lastSampleDiagnostics() throws -> String? {
         try session.lastSampleDiagnostics()
+    }
+
+    public func memorySummary() throws -> String? {
+        try session.memorySummary()
     }
 
     public func resetEvalProfile() throws {

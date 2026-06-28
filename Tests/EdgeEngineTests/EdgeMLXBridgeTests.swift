@@ -122,6 +122,82 @@ private func assertCmlxStateBoundaryProbe(
     }
 }
 
+@Test func cmlxAffineQuantizedMatmulGPUValidatesEightBitVisionCandidateGroupSizes() throws {
+    let rows = 3
+    let inner = 64
+    let columns = 5
+    let lhs = (0..<(rows * inner)).map { Float(Int($0 % 19) - 9) / 7.0 }
+    let rawRows: [[UInt32]] = (0..<columns).map { row in
+        (0..<inner).map { column in
+            UInt32((row * 17 + column * 11) % 256)
+        }
+    }
+
+    for groupSize in [32, 64] {
+        let groupCount = inner / groupSize
+        let scales = (0..<(columns * groupCount)).map {
+            Float(($0 % 13) + 1) / 255.0
+        }
+        let biases = (0..<(columns * groupCount)).map {
+            Float(($0 % 7) - 3) / 128.0
+        }
+        let weights = try EdgeQuantizedTensor(
+            shape: [columns, inner],
+            packedShape: [columns, (inner * 8 + 31) / 32],
+            scaleShape: [columns, groupCount],
+            groupSize: groupSize,
+            bits: 8,
+            packedValues: edgeMLXBridgePackQuantizedRows(rawRows, bits: 8),
+            scales: scales,
+            biases: biases
+        )
+
+        let result = try EdgeMLXBridge.affineQuantizedMatmulFloat32GPU(
+            lhs: lhs,
+            rows: rows,
+            inner: inner,
+            weights: weights,
+            transpose: true
+        )
+        let expected = edgeMLXBridgeDenseMatmulTransposed(
+            lhs,
+            rows: rows,
+            inner: inner,
+            weights: edgeMLXBridgeDenseAffineRows(
+                rawRows: rawRows,
+                scales: scales,
+                biases: biases,
+                groupSize: groupSize
+            ),
+            outputs: columns
+        )
+        let error = try NumericComparison.maxAbsoluteError(result, expected)
+        #expect(error < 1e-3)
+    }
+
+    let unsupportedGroupSize = 16
+    let unsupportedGroupCount = inner / unsupportedGroupSize
+    let unsupportedWeights = try EdgeQuantizedTensor(
+        shape: [columns, inner],
+        packedShape: [columns, (inner * 8 + 31) / 32],
+        scaleShape: [columns, unsupportedGroupCount],
+        groupSize: unsupportedGroupSize,
+        bits: 8,
+        packedValues: edgeMLXBridgePackQuantizedRows(rawRows, bits: 8),
+        scales: Array(repeating: 1.0 / 255.0, count: columns * unsupportedGroupCount),
+        biases: Array(repeating: 0, count: columns * unsupportedGroupCount)
+    )
+    #expect(throws: EdgeMLXBridgeError.invalidShape) {
+        _ = try EdgeMLXBridge.affineQuantizedMatmulFloat32GPU(
+            lhs: lhs,
+            rows: rows,
+            inner: inner,
+            weights: unsupportedWeights,
+            transpose: true
+        )
+    }
+}
+
 @Test func cmlxGPUSoftmaxMatchesReferenceByRow() throws {
     let input: [Float] = [
         1, 2, 3,
@@ -136,6 +212,59 @@ private func assertCmlxStateBoundaryProbe(
     for index in result.indices {
         #expect(abs(result[index] - expected[index]) < 1e-5)
     }
+}
+
+private func edgeMLXBridgePackQuantizedRows(_ rows: [[UInt32]], bits: Int) -> [UInt32] {
+    rows.flatMap { edgeMLXBridgePackQuantizedWords($0, bits: bits) }
+}
+
+private func edgeMLXBridgePackQuantizedWords(_ values: [UInt32], bits: Int) -> [UInt32] {
+    var words = Array(repeating: UInt32.zero, count: (values.count * bits + 31) / 32)
+    let mask = UInt32((1 << bits) - 1)
+    for (index, value) in values.enumerated() {
+        let bitOffset = index * bits
+        let wordIndex = bitOffset / 32
+        let shift = bitOffset % 32
+        words[wordIndex] |= (value & mask) << UInt32(shift)
+        if shift + bits > 32 {
+            words[wordIndex + 1] |= (value & mask) >> UInt32(32 - shift)
+        }
+    }
+    return words
+}
+
+private func edgeMLXBridgeDenseAffineRows(
+    rawRows: [[UInt32]],
+    scales: [Float],
+    biases: [Float],
+    groupSize: Int
+) -> [[Float]] {
+    rawRows.enumerated().map { rowIndex, row in
+        row.enumerated().map { columnIndex, raw in
+            let groupIndex = rowIndex * (row.count / groupSize) + columnIndex / groupSize
+            return Float(raw) * scales[groupIndex] + biases[groupIndex]
+        }
+    }
+}
+
+private func edgeMLXBridgeDenseMatmulTransposed(
+    _ lhs: [Float],
+    rows: Int,
+    inner: Int,
+    weights: [[Float]],
+    outputs: Int
+) -> [Float] {
+    var result = Array(repeating: Float.zero, count: rows * outputs)
+    for row in 0..<rows {
+        for output in 0..<outputs {
+            var sum = Float.zero
+            for column in 0..<inner {
+                sum += lhs[row * inner + column] * weights[output][column]
+            }
+            result[row * outputs + output] = sum
+        }
+    }
+    return result
 }
 
 @Test func cmlxSampleTokenAppliesTopPBeforeTopKWithoutRenormalizingTopK() throws {
@@ -1191,6 +1320,26 @@ final class EdgeMLXBridgeEnvironmentOverrideTests: XCTestCase {
     )
     let secondActual = try cmlx.decodeStep(tokenID: firstActual)
     #expect(secondActual == secondExpected.tokenId)
+    #expect(cmlx.tokenPosition == 2)
+
+    try cmlx.reset()
+    let preservedFirst = try cmlx.decodeStep(tokenID: 5)
+    #expect(preservedFirst == firstExpected.tokenId)
+    #expect(try cmlx.hasDecoderWeights())
+    let loadedSummary = try #require(try cmlx.memorySummary())
+    #expect(loadedSummary.contains("weightsPresent=1"))
+    #expect(loadedSummary.contains("decoded=1"))
+    try cmlx.unloadDecoderWeightsPreservingState()
+    #expect(!(try cmlx.hasDecoderWeights()))
+    #expect(cmlx.tokenPosition == 1)
+    #expect(cmlx.decodedTokenCount == 1)
+    let unloadedSummary = try #require(try cmlx.memorySummary())
+    #expect(unloadedSummary.contains("weightsPresent=0"))
+    #expect(unloadedSummary.contains("decoded=1"))
+    try cmlx.reloadDecoderWeights(model: model)
+    #expect(try cmlx.hasDecoderWeights())
+    let preservedSecond = try cmlx.decodeStep(tokenID: preservedFirst)
+    #expect(preservedSecond == secondExpected.tokenId)
     #expect(cmlx.tokenPosition == 2)
 
     try cmlx.reset()

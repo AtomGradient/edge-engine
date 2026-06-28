@@ -341,6 +341,10 @@ int edge_cmlx_qwen35_session_load_safetensors(
     int group_size,
     int bits);
 
+int edge_cmlx_qwen35_session_has_decoder_weights(const void* session);
+
+int edge_cmlx_qwen35_session_unload_decoder_weights_preserving_state(void* session);
+
 int edge_cmlx_qwen35_session_restore_neural_imprint_cache(
     void* session,
     const char* artifact_path,
@@ -574,6 +578,11 @@ int edge_cmlx_qwen35_session_clear_repetition_penalty(
     void* session);
 
 int edge_cmlx_qwen35_session_copy_last_sample_diagnostics(
+    void* session,
+    char* output,
+    int output_capacity);
+
+int edge_cmlx_qwen35_session_copy_memory_summary(
     void* session,
     char* output,
     int output_capacity);

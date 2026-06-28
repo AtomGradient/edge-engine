@@ -118,6 +118,7 @@ struct EdgeCmlxQwen35Session {
 extern thread_local std::string edge_cmlx_error;
 
 int set_error(const std::string& message);
+void qwen35_vlm_diagnostic_marker(const std::string& message);
 EdgeCmlxQwen35Session* checked_qwen35_session(void* opaque_session);
 const EdgeCmlxQwen35Session* checked_qwen35_session(const void* opaque_session);
 
@@ -171,6 +172,16 @@ void register_loaded_vision_float_tensor(
     int tensor_id,
     const std::unordered_map<std::string, mlx::core::array>& tensors,
     const std::string& tensor_name);
+bool loaded_quantized_companions_exist(
+    const std::unordered_map<std::string, mlx::core::array>& tensors,
+    const std::string& weight_name);
+void register_loaded_quantized_tensor(
+    EdgeCmlxQwen35Session& session,
+    int tensor_id,
+    const std::unordered_map<std::string, mlx::core::array>& tensors,
+    const std::string& weight_name,
+    int group_size,
+    int bits);
 void register_loaded_float_tensor_if_exists(
     EdgeCmlxQwen35Session& session,
     int tensor_id,

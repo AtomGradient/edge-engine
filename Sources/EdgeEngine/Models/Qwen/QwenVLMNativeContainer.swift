@@ -65,6 +65,8 @@ public struct QwenVLMNativeVisionUnloadReport: Equatable, Sendable {
 }
 
 public final class QwenVLMNativeContainer {
+    public typealias DiagnosticSink = (String) -> Void
+
     public let index: QwenVLMModelBundleIndex
     public let runtime: EdgeMetalRuntime
     public let executor: MetalKernelExecutor
@@ -173,6 +175,34 @@ public final class QwenVLMNativeContainer {
         cmlxDecoderSession = nil
     }
 
+    public func hasCmlxDecoderWeights() throws -> Bool {
+        guard let cmlxDecoderSession else {
+            return false
+        }
+        return try cmlxDecoderSession.hasDecoderWeights()
+    }
+
+    public func unloadCmlxDecoderWeightsPreservingState() throws {
+        guard let cmlxDecoderSession else {
+            throw QwenVLMNativeContainerError.decoderNotLoaded
+        }
+        try cmlxDecoderSession.unloadDecoderWeightsPreservingState()
+    }
+
+    public func reloadCmlxDecoderWeightsPreservingState() throws {
+        guard let cmlxDecoderSession else {
+            throw QwenVLMNativeContainerError.decoderNotLoaded
+        }
+        try cmlxDecoderSession.reloadDecoderWeights(bundleIndex: index.languageIndex)
+    }
+
+    public func cmlxDecoderMemorySummary() throws -> String? {
+        guard let cmlxDecoderSession else {
+            return nil
+        }
+        return try cmlxDecoderSession.memorySummary()
+    }
+
     public func loadVisionWeights() throws {
         guard visionWeights == nil else {
             throw QwenVLMNativeContainerError.visionAlreadyLoaded
@@ -196,17 +226,26 @@ public final class QwenVLMNativeContainer {
         )
     }
 
-    public func loadCmlxVisionWeights() throws {
+    public func loadCmlxVisionWeights(diagnosticSink: DiagnosticSink? = nil) throws {
         guard cmlxVisionSession == nil else {
             throw QwenVLMNativeContainerError.visionAlreadyLoaded
         }
+        diagnosticSink?("vlm_cmlx_vision_load_begin")
+        diagnosticSink?("vlm_cmlx_vision_session_create_begin")
         let session = try EdgeMLXQwen35Session(
             architecture: index.languageIndex.architecture,
             runtime: runtime
         )
+        diagnosticSink?("vlm_cmlx_vision_session_create_done")
+        diagnosticSink?("vlm_cmlx_vision_config_begin")
         try session.setVisionConfig(plan: index.preflightResult.plan)
-        try session.loadVisionSafetensors(index: index)
+        diagnosticSink?("vlm_cmlx_vision_config_done")
+        try session.loadVisionSafetensors(
+            index: index,
+            diagnosticSink: diagnosticSink
+        )
         cmlxVisionSession = session
+        diagnosticSink?("vlm_cmlx_vision_load_done")
     }
 
     public func unloadCmlxVisionWeights() {

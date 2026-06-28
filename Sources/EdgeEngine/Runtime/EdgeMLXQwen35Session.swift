@@ -203,6 +203,14 @@ public final class EdgeMLXQwen35Session {
         Int(edge_cmlx_qwen35_session_decoded_token_count(handle))
     }
 
+    public func hasDecoderWeights() throws -> Bool {
+        let status = edge_cmlx_qwen35_session_has_decoder_weights(handle)
+        guard status >= 0 else {
+            throw Self.currentError(defaultMessage: "failed to inspect Qwen3.5 Cmlx decoder weights")
+        }
+        return status == 1
+    }
+
     public static func configureCommandBufferLimits(
         maxOps: Int,
         maxMB: Int
@@ -376,6 +384,13 @@ public final class EdgeMLXQwen35Session {
         }
     }
 
+    public func unloadDecoderWeightsPreservingState() throws {
+        let status = edge_cmlx_qwen35_session_unload_decoder_weights_preserving_state(handle)
+        guard status == 0 else {
+            throw Self.currentError(defaultMessage: "failed to unload Qwen3.5 Cmlx decoder weights")
+        }
+    }
+
     public func restoreNeuralImprintCache(
         artifactURL: URL,
         prefixTokenCount: Int
@@ -539,11 +554,15 @@ public final class EdgeMLXQwen35Session {
 
     public func loadVisionSafetensors(
         shardURLs: [URL],
-        visionPrefix: String
+        visionPrefix: String,
+        diagnosticSink: ((String) -> Void)? = nil
     ) throws {
         guard !shardURLs.isEmpty, !visionPrefix.isEmpty else {
             throw EdgeMLXQwen35SessionError.invalidConfiguration
         }
+        diagnosticSink?(
+            "vlm_cmlx_vision_safetensors_prepare shards=\(shardURLs.count) prefix=\(visionPrefix)"
+        )
         let duplicatedPaths = shardURLs.map { strdup($0.path)! }
         defer {
             for path in duplicatedPaths {
@@ -551,6 +570,7 @@ public final class EdgeMLXQwen35Session {
             }
         }
         let pathPointers: [UnsafePointer<CChar>?] = duplicatedPaths.map { UnsafePointer<CChar>($0) }
+        diagnosticSink?("vlm_cmlx_vision_safetensors_c_call_begin shards=\(pathPointers.count)")
         let status = pathPointers.withUnsafeBufferPointer { paths in
             visionPrefix.withCString { prefix in
                 edge_cmlx_qwen35_session_load_vision_safetensors(
@@ -561,12 +581,19 @@ public final class EdgeMLXQwen35Session {
                 )
             }
         }
+        diagnosticSink?("vlm_cmlx_vision_safetensors_c_call_return status=\(status)")
         guard status == 0 else {
             throw Self.currentError(defaultMessage: "failed to load Qwen3.5 Cmlx vision safetensors")
         }
     }
 
-    public func loadVisionSafetensors(index: QwenVLMModelBundleIndex) throws {
+    public func loadVisionSafetensors(
+        index: QwenVLMModelBundleIndex,
+        diagnosticSink: ((String) -> Void)? = nil
+    ) throws {
+        diagnosticSink?(
+            "vlm_cmlx_vision_safetensors_index_begin tensors=\(index.visionManifest.tensorNames.count)"
+        )
         var shardFileNames = Set<String>()
         for tensorName in index.visionManifest.tensorNames {
             shardFileNames.insert(try index.shardFileName(containing: tensorName))
@@ -574,9 +601,14 @@ public final class EdgeMLXQwen35Session {
         let shardURLs = shardFileNames
             .sorted()
             .map { index.rootURL.appendingPathComponent($0) }
+        let shardFileList = shardURLs.map(\.lastPathComponent).joined(separator: ",")
+        diagnosticSink?(
+            "vlm_cmlx_vision_safetensors_index_done shards=\(shardURLs.count) files=\(shardFileList)"
+        )
         try loadVisionSafetensors(
             shardURLs: shardURLs,
-            visionPrefix: index.visionManifest.prefix
+            visionPrefix: index.visionManifest.prefix,
+            diagnosticSink: diagnosticSink
         )
     }
 
@@ -1347,6 +1379,24 @@ public final class EdgeMLXQwen35Session {
         }
         guard status == 0 else {
             throw Self.currentError(defaultMessage: "failed to read Qwen3.5 Cmlx sample diagnostics")
+        }
+        let value = output.withUnsafeBufferPointer { buffer in
+            String(cString: buffer.baseAddress!)
+        }
+        return value.isEmpty ? nil : value
+    }
+
+    public func memorySummary() throws -> String? {
+        var output = Array(repeating: CChar(0), count: 8192)
+        let status = output.withUnsafeMutableBufferPointer { buffer in
+            edge_cmlx_qwen35_session_copy_memory_summary(
+                handle,
+                buffer.baseAddress,
+                Int32(buffer.count)
+            )
+        }
+        guard status == 0 else {
+            throw Self.currentError(defaultMessage: "failed to read Qwen3.5 Cmlx memory summary")
         }
         let value = output.withUnsafeBufferPointer { buffer in
             String(cString: buffer.baseAddress!)
