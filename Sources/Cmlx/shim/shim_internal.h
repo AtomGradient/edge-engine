@@ -118,6 +118,8 @@ struct EdgeCmlxQwen35Session {
 extern thread_local std::string edge_cmlx_error;
 
 int set_error(const std::string& message);
+bool qwen35_vlm_load_debug_enabled();
+void qwen35_vlm_load_debug(const std::string& message);
 void qwen35_vlm_diagnostic_marker(const std::string& message);
 std::string qwen35_mlx_memory_summary();
 EdgeCmlxQwen35Session* checked_qwen35_session(void* opaque_session);

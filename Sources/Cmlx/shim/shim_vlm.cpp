@@ -7,8 +7,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
-#include <cstdio>
-#include <cstdlib>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -27,19 +25,6 @@ namespace edge_cmlx::detail {
 
 const EdgeCmlxQwen35VisionConfig& checked_qwen35_vision_config(
     const EdgeCmlxQwen35Session& session);
-
-static bool qwen35_vlm_load_debug_enabled() {
-  const char* value = std::getenv("EDGE_CMLX_VLM_LOAD_DEBUG");
-  return value != nullptr && value[0] != '\0' && value[0] != '0';
-}
-
-static void qwen35_vlm_load_debug(const std::string& message) {
-  if (!qwen35_vlm_load_debug_enabled()) {
-    return;
-  }
-  std::fprintf(stderr, "[CmlxVLM] %s\n", message.c_str());
-  std::fflush(stderr);
-}
 
 constexpr int kQwen35VisionQuantizedGroupSize = 64;
 constexpr int kQwen35VisionQuantizedBits = 8;
