@@ -41,13 +41,6 @@ static void qwen35_vlm_load_debug(const std::string& message) {
   std::fflush(stderr);
 }
 
-static std::string qwen35_vlm_memory_summary() {
-  return " activeMB=" +
-      std::to_string(mlx::core::get_active_memory() / 1048576) +
-      " cacheMB=" +
-      std::to_string(mlx::core::get_cache_memory() / 1048576);
-}
-
 constexpr int kQwen35VisionQuantizedGroupSize = 64;
 constexpr int kQwen35VisionQuantizedBits = 8;
 
@@ -189,7 +182,7 @@ void register_qwen35_vision_tensors(
       "register_vision_tensors begin layers=" +
       std::to_string(config.layer_count) +
       " tensors=" + std::to_string(tensors.size()) +
-      qwen35_vlm_memory_summary());
+      qwen35_mlx_memory_summary());
   register_loaded_vision_weight_tensor(
       session,
       qwen35_vision_patch_embed_weight_id(),
@@ -209,7 +202,7 @@ void register_qwen35_vision_tensors(
     qwen35_vlm_diagnostic_marker(
         "register_vision_tensors layer_begin layer=" +
         std::to_string(layer) +
-        qwen35_vlm_memory_summary());
+        qwen35_mlx_memory_summary());
     const auto layer_prefix =
         prefix + ".blocks." + std::to_string(layer);
     register_loaded_vision_float_tensor(
@@ -275,7 +268,7 @@ void register_qwen35_vision_tensors(
     qwen35_vlm_diagnostic_marker(
         "register_vision_tensors layer_done layer=" +
         std::to_string(layer) +
-        qwen35_vlm_memory_summary());
+        qwen35_mlx_memory_summary());
   }
   register_loaded_vision_float_tensor(
       session,
@@ -308,7 +301,7 @@ void register_qwen35_vision_tensors(
       tensors,
       prefix + ".merger.linear_fc2.bias");
   qwen35_vlm_diagnostic_marker(
-      "register_vision_tensors done" + qwen35_vlm_memory_summary());
+      "register_vision_tensors done" + qwen35_mlx_memory_summary());
 }
 
 void validate_qwen35_vision_config(const EdgeCmlxQwen35VisionConfig& config) {
@@ -898,7 +891,7 @@ mlx::core::array qwen35_vision_encode_array(
   qwen35_vlm_diagnostic_marker(
       "vision_encode begin patches=" + std::to_string(num_patches) +
       " tokens=" + std::to_string(token_count) +
-      qwen35_vlm_memory_summary());
+      qwen35_mlx_memory_summary());
   auto pixels = array(
       pixel_values,
       Shape{num_patches, patch_dim},
@@ -925,7 +918,7 @@ mlx::core::array qwen35_vision_encode_array(
   for (int layer = 0; layer < config.layer_count; ++layer) {
     qwen35_vlm_diagnostic_marker(
         "vision_encode layer_begin layer=" + std::to_string(layer) +
-        qwen35_vlm_memory_summary());
+        qwen35_mlx_memory_summary());
     auto residual = hidden;
     auto normed = qwen35_vision_layer_norm(
         hidden,
@@ -966,17 +959,17 @@ mlx::core::array qwen35_vision_encode_array(
     hidden = add(residual, mlp, stream);
     qwen35_vlm_diagnostic_marker(
         "vision_encode layer_done layer=" + std::to_string(layer) +
-        qwen35_vlm_memory_summary());
+        qwen35_mlx_memory_summary());
   }
   qwen35_vlm_diagnostic_marker(
-      "vision_encode merger_begin" + qwen35_vlm_memory_summary());
+      "vision_encode merger_begin" + qwen35_mlx_memory_summary());
   auto merged = qwen35_vision_patch_merger(
       session,
       hidden,
       token_count,
       stream);
   qwen35_vlm_diagnostic_marker(
-      "vision_encode done" + qwen35_vlm_memory_summary());
+      "vision_encode done" + qwen35_mlx_memory_summary());
   return merged;
 }
 
@@ -1022,7 +1015,7 @@ int edge_cmlx_qwen35_session_load_vision_safetensors(
         "load_vision_safetensors begin shards=" +
         std::to_string(shard_count) +
         " prefix=" + prefix +
-        qwen35_vlm_memory_summary());
+        qwen35_mlx_memory_summary());
     for (int i = 0; i < shard_count; ++i) {
       if (shard_paths[i] == nullptr) {
         return set_error(
@@ -1031,7 +1024,7 @@ int edge_cmlx_qwen35_session_load_vision_safetensors(
       qwen35_vlm_diagnostic_marker(
           "load_vision_safetensors shard_begin index=" +
           std::to_string(i) +
-          qwen35_vlm_memory_summary());
+          qwen35_mlx_memory_summary());
       auto loaded = mlx::core::load_safetensors(std::string(shard_paths[i]));
       int matched_count = 0;
       for (auto& item : loaded.first) {
@@ -1046,20 +1039,20 @@ int edge_cmlx_qwen35_session_load_vision_safetensors(
           " loaded=" + std::to_string(loaded.first.size()) +
           " matched=" + std::to_string(matched_count) +
           " totalMatched=" + std::to_string(tensors.size()) +
-          qwen35_vlm_memory_summary());
+          qwen35_mlx_memory_summary());
     }
     qwen35_vlm_diagnostic_marker(
         "load_vision_safetensors register_begin tensors=" +
         std::to_string(tensors.size()) +
-        qwen35_vlm_memory_summary());
+        qwen35_mlx_memory_summary());
     register_qwen35_vision_tensors(*qwen_session, tensors, prefix);
     qwen35_vlm_diagnostic_marker(
         "load_vision_safetensors register_done" +
-        qwen35_vlm_memory_summary());
+        qwen35_mlx_memory_summary());
     mlx::core::clear_cache();
     qwen35_vlm_diagnostic_marker(
         "load_vision_safetensors clear_cache_done" +
-        qwen35_vlm_memory_summary());
+        qwen35_mlx_memory_summary());
     return 0;
   } catch (const std::exception& error) {
     return set_error(error.what());
@@ -1105,17 +1098,17 @@ int edge_cmlx_qwen35_session_vision_encode(
     if (encoded.dtype() != mlx::core::float32) {
       qwen35_vlm_diagnostic_marker(
           "vision_encode output_cast_float32_begin" +
-          qwen35_vlm_memory_summary());
+          qwen35_mlx_memory_summary());
       encoded = mlx::core::astype(encoded, mlx::core::float32, gpu_device);
       qwen35_vlm_diagnostic_marker(
           "vision_encode output_cast_float32_done" +
-          qwen35_vlm_memory_summary());
+          qwen35_mlx_memory_summary());
     }
     qwen35_vlm_diagnostic_marker(
-        "vision_encode output_eval_begin" + qwen35_vlm_memory_summary());
+        "vision_encode output_eval_begin" + qwen35_mlx_memory_summary());
     mlx::core::eval(encoded);
     qwen35_vlm_diagnostic_marker(
-        "vision_encode output_eval_done" + qwen35_vlm_memory_summary());
+        "vision_encode output_eval_done" + qwen35_mlx_memory_summary());
     const int rows = static_cast<int>(encoded.shape(0));
     const int columns = static_cast<int>(encoded.shape(1));
     if (columns != config.output_hidden_size) {
@@ -1127,22 +1120,22 @@ int edge_cmlx_qwen35_session_vision_encode(
     qwen35_vlm_diagnostic_marker(
         "vision_encode output_copy_begin rows=" + std::to_string(rows) +
         " cols=" + std::to_string(columns) +
-        " count=" + std::to_string(count) + qwen35_vlm_memory_summary());
+        " count=" + std::to_string(count) + qwen35_mlx_memory_summary());
     const float* data = encoded.data<float>();
     qwen35_vlm_diagnostic_marker(
-        "vision_encode output_data_ready" + qwen35_vlm_memory_summary());
+        "vision_encode output_data_ready" + qwen35_mlx_memory_summary());
     std::copy(data, data + count, output);
     qwen35_vlm_diagnostic_marker(
-        "vision_encode output_copy_done" + qwen35_vlm_memory_summary());
+        "vision_encode output_copy_done" + qwen35_mlx_memory_summary());
     *output_patches = rows;
     *output_hidden_size = columns;
     qwen35_vlm_diagnostic_marker(
         "vision_encode output_clear_cache_begin" +
-        qwen35_vlm_memory_summary());
+        qwen35_mlx_memory_summary());
     mlx::core::clear_cache();
     qwen35_vlm_diagnostic_marker(
         "vision_encode output_clear_cache_done" +
-        qwen35_vlm_memory_summary());
+        qwen35_mlx_memory_summary());
     return 0;
   } catch (const std::exception& error) {
     return set_error(error.what());

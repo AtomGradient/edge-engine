@@ -111,6 +111,13 @@ int qwen35_max_int_map_value(const std::unordered_map<int, int>& values) {
   return max_value;
 }
 
+std::string qwen35_mlx_memory_summary() {
+  return " activeMB=" +
+      std::to_string(mlx::core::get_active_memory() / 1048576) +
+      " cacheMB=" +
+      std::to_string(mlx::core::get_cache_memory() / 1048576);
+}
+
 bool qwen35_session_has_decoder_weights(
     const EdgeCmlxQwen35Session& session) {
   return !session.float_tensors.empty() ||
@@ -174,8 +181,7 @@ std::string qwen35_session_memory_summary(
           << " basePosition=" << session.attention_cache_base_position
           << " baseIndex=" << session.attention_cache_base_index
           << " pendingToken=" << (session.pending_token.has_value() ? 1 : 0)
-          << " activeMB=" << (mlx::core::get_active_memory() / 1048576)
-          << " cacheMB=" << (mlx::core::get_cache_memory() / 1048576);
+          << qwen35_mlx_memory_summary();
   return summary.str();
 }
 
