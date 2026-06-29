@@ -5,5 +5,5 @@ import Testing
 @testable import EdgeEngine
 
 @Test func exposesPackageVersion() {
-    #expect(EdgeEngine.version == "1.0.0-rc141")
+    #expect(EdgeEngine.version == "1.0.0-rc143")
 }
