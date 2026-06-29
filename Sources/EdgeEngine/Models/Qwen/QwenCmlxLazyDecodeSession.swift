@@ -160,7 +160,6 @@ public final class QwenCmlxLazyDecodeSession {
         try session.setFrogJumpLayerMask(frogJumpLayerMask)
         try session.setAttentionCacheLimit(maxTokens: attentionCacheLimit)
         try Self.register(model: model, into: session, executor: executor)
-        try session.materializeDecoderWeights()
     }
 
     public init(
@@ -215,10 +214,6 @@ public final class QwenCmlxLazyDecodeSession {
         try session.hasDecoderWeights()
     }
 
-    public func materializeDecoderWeights() throws {
-        try session.materializeDecoderWeights()
-    }
-
     public static func configureCommandBufferLimits(
         maxOps: Int,
         maxMB: Int
@@ -266,7 +261,6 @@ public final class QwenCmlxLazyDecodeSession {
         executor: MetalKernelExecutor? = nil
     ) throws {
         try Self.register(model: model, into: session, executor: executor)
-        try session.materializeDecoderWeights()
     }
 
     public func restoreNeuralImprintCache(

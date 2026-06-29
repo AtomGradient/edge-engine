@@ -771,39 +771,6 @@ final class EdgeMLXBridgeEnvironmentOverrideTests: XCTestCase {
     #expect(session.registeredQuantizedTensorCount == 1)
 }
 
-@Test func cmlxQwen35SessionMaterializesEmptyDecoderWeightsAsNoop() throws {
-    let runtime = try EdgeMetalRuntime()
-    let architecture = try QwenHybridArchitecture(
-        family: .qwen35,
-        vocabularySize: 32,
-        hiddenSize: 64,
-        intermediateSize: 64,
-        attentionHeadCount: 1,
-        keyValueHeadCount: 1,
-        headDimension: 64,
-        linearValueHeadCount: 1,
-        linearKeyHeadCount: 1,
-        linearKeyHeadDimension: 64,
-        linearValueHeadDimension: 64,
-        linearConvKernelSize: 4,
-        contextLength: 128,
-        rmsNormEpsilon: 1e-6,
-        ropeTheta: 1_000_000,
-        partialRotaryFactor: 1.0,
-        quantization: QwenQuantizationProfile(groupSize: 64, bits: 4),
-        layerKinds: [.fullAttention, .gdn]
-    )
-    let session = try EdgeMLXQwen35Session(architecture: architecture, runtime: runtime)
-
-    try session.materializeDecoderWeights()
-
-    let summary = try #require(try session.memorySummary())
-    #expect(summary.contains("weightsPresent=0"))
-    #expect(summary.contains("decoderWeightMaterializeArrays=0"))
-    #expect(summary.contains("decoderWeightMaterializeBytes=0"))
-    #expect(summary.contains("decoderWeightMaterializeBatches=0"))
-}
-
 @Test func cmlxQwen35SessionQuantizedDSRScoresCollapseGQAHeads() throws {
     let runtime = try EdgeMetalRuntime()
     let hidden = 256
@@ -1335,10 +1302,6 @@ final class EdgeMLXBridgeEnvironmentOverrideTests: XCTestCase {
         )
     )
     let cmlx = try QwenCmlxLazyDecodeSession(model: model, runtime: runtime)
-    let initializedSummary = try #require(try cmlx.memorySummary())
-    #expect(initializedSummary.contains("weightsPresent=1"))
-    #expect(!initializedSummary.contains("decoderWeightMaterializeArrays=0"))
-    #expect(initializedSummary.contains("decoderWeightMaterializeBatches=1"))
     let referenceCaches = try QwenHybridDecoderCaches(architecture: architecture, runtime: runtime, kvCapacity: 8)
 
     let firstExpected = try model.lastTokenGreedyToken(
@@ -1372,13 +1335,9 @@ final class EdgeMLXBridgeEnvironmentOverrideTests: XCTestCase {
     #expect(cmlx.decodedTokenCount == 1)
     let unloadedSummary = try #require(try cmlx.memorySummary())
     #expect(unloadedSummary.contains("weightsPresent=0"))
-    #expect(unloadedSummary.contains("decoderWeightMaterializeArrays=0"))
     #expect(unloadedSummary.contains("decoded=1"))
     try cmlx.reloadDecoderWeights(model: model)
     #expect(try cmlx.hasDecoderWeights())
-    let reloadedSummary = try #require(try cmlx.memorySummary())
-    #expect(!reloadedSummary.contains("decoderWeightMaterializeArrays=0"))
-    #expect(reloadedSummary.contains("decoderWeightMaterializeBatches=1"))
     let preservedSecond = try cmlx.decodeStep(tokenID: preservedFirst)
     #expect(preservedSecond == secondExpected.tokenId)
     #expect(cmlx.tokenPosition == 2)

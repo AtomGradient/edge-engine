@@ -87,10 +87,6 @@ struct EdgeCmlxQwen35Session {
   std::string eval_profile_last_metal_summary;
   int eval_profile_last_token_count = 0;
   int eval_profile_last_decoded_before = 0;
-  uint64_t decoder_weight_materialize_arrays = 0;
-  uint64_t decoder_weight_materialize_bytes = 0;
-  uint64_t decoder_weight_materialize_batches = 0;
-  double decoder_weight_materialize_elapsed_ms = 0.0;
   uint64_t eval_profile_fused_rms_scale_hits = 0;
   uint64_t eval_profile_fused_rms_scale_tokens = 0;
   int eval_profile_fused_rms_scale_last_layer = -1;
