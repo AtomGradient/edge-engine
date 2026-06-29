@@ -214,6 +214,10 @@ public final class QwenCmlxLazyDecodeSession {
         try session.hasDecoderWeights()
     }
 
+    public func materializeDecoderWeights() throws {
+        try session.materializeDecoderWeights()
+    }
+
     public static func configureCommandBufferLimits(
         maxOps: Int,
         maxMB: Int

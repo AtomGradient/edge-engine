@@ -384,6 +384,13 @@ public final class EdgeMLXQwen35Session {
         }
     }
 
+    public func materializeDecoderWeights() throws {
+        let status = edge_cmlx_qwen35_session_materialize_decoder_weights(handle)
+        guard status == 0 else {
+            throw Self.currentError(defaultMessage: "failed to materialize Qwen3.5 Cmlx decoder weights")
+        }
+    }
+
     public func unloadDecoderWeightsPreservingState() throws {
         let status = edge_cmlx_qwen35_session_unload_decoder_weights_preserving_state(handle)
         guard status == 0 else {

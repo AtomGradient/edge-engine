@@ -170,6 +170,14 @@ std::string qwen35_session_memory_summary(
           << " dsrTokens="
           << qwen35_max_int_map_value(
                  session.attention_dsr_tokens_since_eviction)
+          << " decoderWeightMaterializeArrays="
+          << session.decoder_weight_materialize_arrays
+          << " decoderWeightMaterializeBytes="
+          << session.decoder_weight_materialize_bytes
+          << " decoderWeightMaterializeBatches="
+          << session.decoder_weight_materialize_batches
+          << " decoderWeightMaterializeMs="
+          << session.decoder_weight_materialize_elapsed_ms
           << " decoded=" << session.decoded_token_count
           << " basePosition=" << session.attention_cache_base_position
           << " baseIndex=" << session.attention_cache_base_index
@@ -177,6 +185,89 @@ std::string qwen35_session_memory_summary(
           << " activeMB=" << (mlx::core::get_active_memory() / 1048576)
           << " cacheMB=" << (mlx::core::get_cache_memory() / 1048576);
   return summary.str();
+}
+
+struct EdgeCmlxMaterializeStats {
+  uint64_t arrays = 0;
+  uint64_t bytes = 0;
+  uint64_t batches = 0;
+  double elapsed_ms = 0.0;
+};
+
+void qwen35_reset_decoder_weight_materialize_stats(
+    EdgeCmlxQwen35Session& session) {
+  session.decoder_weight_materialize_arrays = 0;
+  session.decoder_weight_materialize_bytes = 0;
+  session.decoder_weight_materialize_batches = 0;
+  session.decoder_weight_materialize_elapsed_ms = 0.0;
+}
+
+void qwen35_materialize_batch(
+    std::vector<mlx::core::array>& batch,
+    size_t& batch_bytes,
+    EdgeCmlxMaterializeStats& stats) {
+  if (batch.empty()) {
+    return;
+  }
+  std::vector<mlx::core::array> outputs;
+  outputs.swap(batch);
+  const auto started_at = std::chrono::steady_clock::now();
+  mlx::core::eval(std::move(outputs));
+  stats.elapsed_ms += std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - started_at)
+      .count();
+  stats.batches += 1;
+  batch_bytes = 0;
+  mlx::core::clear_cache();
+}
+
+void qwen35_enqueue_materialize_array(
+    const mlx::core::array& value,
+    std::vector<mlx::core::array>& batch,
+    size_t& batch_bytes,
+    EdgeCmlxMaterializeStats& stats) {
+  const size_t bytes = value.nbytes();
+  if (bytes == 0) {
+    return;
+  }
+  constexpr size_t max_batch_bytes = 128 * 1024 * 1024;
+  if (!batch.empty() && batch_bytes + bytes > max_batch_bytes) {
+    qwen35_materialize_batch(batch, batch_bytes, stats);
+  }
+  batch.push_back(value);
+  batch_bytes += bytes;
+  stats.arrays += 1;
+  stats.bytes += bytes;
+}
+
+EdgeCmlxMaterializeStats qwen35_materialize_decoder_weights(
+    EdgeCmlxQwen35Session& session) {
+  EdgeCmlxMaterializeStats stats;
+  std::vector<mlx::core::array> batch;
+  size_t batch_bytes = 0;
+
+  for (const auto& entry : session.float_tensors) {
+    qwen35_enqueue_materialize_array(entry.second, batch, batch_bytes, stats);
+  }
+  for (const auto& entry : session.quantized_tensors) {
+    qwen35_enqueue_materialize_array(
+        entry.second.packed, batch, batch_bytes, stats);
+    qwen35_enqueue_materialize_array(
+        entry.second.scales, batch, batch_bytes, stats);
+    qwen35_enqueue_materialize_array(
+        entry.second.biases, batch, batch_bytes, stats);
+  }
+  for (const auto& entry : session.gdn_neg_exp_a_log_tensors) {
+    qwen35_enqueue_materialize_array(entry.second, batch, batch_bytes, stats);
+  }
+  qwen35_materialize_batch(batch, batch_bytes, stats);
+
+  qwen35_reset_decoder_weight_materialize_stats(session);
+  session.decoder_weight_materialize_arrays = stats.arrays;
+  session.decoder_weight_materialize_bytes = stats.bytes;
+  session.decoder_weight_materialize_batches = stats.batches;
+  session.decoder_weight_materialize_elapsed_ms = stats.elapsed_ms;
+  return stats;
 }
 
 void validate_array_element_count(
@@ -7171,6 +7262,7 @@ int edge_cmlx_qwen35_session_load_safetensors(
   }
   try {
     auto* qwen_session = checked_qwen35_session(session);
+    qwen35_reset_decoder_weight_materialize_stats(*qwen_session);
     std::unordered_map<std::string, mlx::core::array> tensors;
     for (int i = 0; i < shard_count; ++i) {
       if (shard_paths[i] == nullptr) {
@@ -7232,6 +7324,14 @@ int edge_cmlx_qwen35_session_load_safetensors(
             "edge_cmlx_qwen35_session_load_safetensors encountered an unset layer kind");
       }
     }
+    const auto materialize_stats =
+        qwen35_materialize_decoder_weights(*qwen_session);
+    qwen35_vlm_diagnostic_marker(
+        "decoder_weight_materialize arrays=" +
+        std::to_string(materialize_stats.arrays) +
+        " bytes=" + std::to_string(materialize_stats.bytes) +
+        " batches=" + std::to_string(materialize_stats.batches) +
+        " elapsedMs=" + std::to_string(materialize_stats.elapsed_ms));
     mlx::core::clear_cache();
     return 0;
   } catch (const std::exception& error) {
@@ -7239,6 +7339,27 @@ int edge_cmlx_qwen35_session_load_safetensors(
   } catch (...) {
     return set_error(
         "edge_cmlx_qwen35_session_load_safetensors failed with an unknown error");
+  }
+}
+
+int edge_cmlx_qwen35_session_materialize_decoder_weights(void* session) {
+  edge_cmlx_error.clear();
+  try {
+    auto* qwen_session = checked_qwen35_session(session);
+    const auto materialize_stats =
+        qwen35_materialize_decoder_weights(*qwen_session);
+    qwen35_vlm_diagnostic_marker(
+        "decoder_weight_materialize_manual arrays=" +
+        std::to_string(materialize_stats.arrays) +
+        " bytes=" + std::to_string(materialize_stats.bytes) +
+        " batches=" + std::to_string(materialize_stats.batches) +
+        " elapsedMs=" + std::to_string(materialize_stats.elapsed_ms));
+    return 0;
+  } catch (const std::exception& error) {
+    return set_error(error.what());
+  } catch (...) {
+    return set_error(
+        "edge_cmlx_qwen35_session_materialize_decoder_weights failed with an unknown error");
   }
 }
 
@@ -7263,6 +7384,7 @@ int edge_cmlx_qwen35_session_unload_decoder_weights_preserving_state(
     qwen_session->float_tensors.clear();
     qwen_session->quantized_tensors.clear();
     qwen_session->gdn_neg_exp_a_log_tensors.clear();
+    qwen35_reset_decoder_weight_materialize_stats(*qwen_session);
     mlx::core::clear_cache();
     return 0;
   } catch (const std::exception& error) {
